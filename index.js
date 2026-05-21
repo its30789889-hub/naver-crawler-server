@@ -23,31 +23,25 @@ async function expandNaverUrl(shortUrl) {
       }
     })
     return res.url
-  } catch {
+  } catch (e) {
+    console.log('단축URL 확장 실패:', e.message)
     return shortUrl
   }
 }
 
 async function fetchReviews(placeId, maxReviews = 50) {
   const reviews = []
-  let page = 1
 
   const commonHeaders = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Accept-Language': 'ko-KR,ko;q=0.9',
     'Referer': `https://pcmap.place.naver.com/restaurant/${placeId}/review/visitor`,
-    'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"macOS"',
-    'sec-fetch-dest': 'empty',
-    'sec-fetch-mode': 'cors',
-    'sec-fetch-site': 'same-origin',
+    'Content-Type': 'application/json',
   }
 
-  while (reviews.length < maxReviews && page <= 10) {
+  for (let page = 1; page <= 5 && reviews.length < maxReviews; page++) {
     try {
-      const url = `https://pcmap-api.place.naver.com/place/graphql`
       const body = [{
         operationName: 'getVisitorReviews',
         variables: {
@@ -67,36 +61,30 @@ async function fetchReviews(placeId, maxReviews = 50) {
         },
         query: `query getVisitorReviews($input: VisitorReviewsInput) {
           visitorReviews(input: $input) {
-            items {
-              id
-              body
-              rating
-              author {
-                nickname
-              }
-              created
-            }
+            items { id body rating author { nickname } }
             totalCount
-            __typename
           }
         }`
       }]
 
-      const res = await fetch(url, {
+      console.log(`[리뷰] 페이지 ${page} 요청 중...`)
+
+      const res = await fetch('https://pcmap-api.place.naver.com/place/graphql', {
         method: 'POST',
-        headers: { ...commonHeaders, 'Content-Type': 'application/json' },
+        headers: commonHeaders,
         body: JSON.stringify(body),
       })
 
-      if (!res.ok) {
-        console.log(`API 응답 실패: ${res.status}`)
-        break
-      }
+      console.log(`[리뷰] 응답 상태: ${res.status}`)
 
-      const data = await res.json()
+      const text = await res.text()
+      console.log(`[리뷰] 응답 내용 (첫 200자): ${text.slice(0, 200)}`)
+
+      if (!res.ok) break
+
+      const data = JSON.parse(text)
       const items = data?.[0]?.data?.visitorReviews?.items || []
-
-      console.log(`페이지 ${page}: ${items.length}개 리뷰`)
+      console.log(`[리뷰] 페이지 ${page}: ${items.length}개`)
 
       if (items.length === 0) break
 
@@ -104,10 +92,9 @@ async function fetchReviews(placeId, maxReviews = 50) {
         if (item.body?.trim()) reviews.push(item.body.trim())
       }
 
-      page++
       await new Promise(r => setTimeout(r, 500))
     } catch (err) {
-      console.error(`페이지 ${page} 오류:`, err.message)
+      console.error(`[리뷰] 페이지 ${page} 오류:`, err.message)
       break
     }
   }
@@ -115,47 +102,8 @@ async function fetchReviews(placeId, maxReviews = 50) {
   return reviews.slice(0, maxReviews)
 }
 
-async function fetchPlaceInfo(placeId) {
-  try {
-    const url = `https://pcmap-api.place.naver.com/place/graphql`
-    const body = [{
-      operationName: 'getRestaurant',
-      variables: {
-        input: { businessId: placeId }
-      },
-      query: `query getRestaurant($input: RestaurantInput) {
-        restaurant(input: $input) {
-          name
-          category
-          address
-          phone
-          businessHours { businessStatus { status } description }
-          visitorReviewsScore
-        }
-      }`
-    }]
-
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Referer': `https://pcmap.place.naver.com/restaurant/${placeId}/home`,
-      },
-      body: JSON.stringify(body),
-    })
-
-    if (!res.ok) return null
-    const data = await res.json()
-    return data?.[0]?.data?.restaurant || null
-  } catch {
-    return null
-  }
-}
-
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: '네이버 리뷰 크롤러 서버 v3' })
+  res.json({ status: 'ok', message: '네이버 리뷰 크롤러 서버 v4' })
 })
 
 app.post('/crawl', async (req, res) => {
@@ -169,32 +117,27 @@ app.post('/crawl', async (req, res) => {
 
     if (url.includes('naver.me/')) {
       url = await expandNaverUrl(url)
-      console.log(`단축 URL 확장: ${url}`)
+      console.log(`단축 URL 확장 결과: ${url}`)
     }
 
     const placeId = extractPlaceId(url)
+    console.log(`placeId 추출: ${placeId} (from: ${url})`)
+
     if (!placeId) return res.status(400).json({ error: 'URL에서 가게 ID를 찾을 수 없습니다' })
 
-    console.log(`시작: placeId=${placeId}`)
-    const start = Date.now()
-
-    const [info, reviews] = await Promise.all([
-      fetchPlaceInfo(placeId),
-      fetchReviews(placeId, Math.min(maxReviews, 100)),
-    ])
-
-    console.log(`완료: ${reviews.length}개 리뷰, ${Date.now() - start}ms`)
+    const reviews = await fetchReviews(placeId, Math.min(maxReviews, 50))
+    console.log(`최종 리뷰 수: ${reviews.length}`)
 
     res.json({
       success: true,
       placeId,
       data: {
-        name: info?.name || '가게 이름',
-        category: info?.category || '',
-        address: info?.address || '',
-        phone: info?.phone || '',
-        hours: info?.businessHours?.description || '',
-        rating: String(info?.visitorReviewsScore || ''),
+        name: '가게 이름',
+        category: '',
+        address: '',
+        phone: '',
+        hours: '',
+        rating: '',
         reviewCount: reviews.length,
         reviews,
         reviewsText: reviews.join('\n'),
@@ -207,5 +150,5 @@ app.post('/crawl', async (req, res) => {
 })
 
 app.listen(PORT, () => {
-  console.log(`크롤러 서버 v3 실행 중: http://localhost:${PORT}`)
+  console.log(`크롤러 서버 v4 실행 중: http://localhost:${PORT}`)
 })
