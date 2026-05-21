@@ -5,54 +5,50 @@ app.use(express.json())
 
 const PORT = process.env.PORT || 3001
 
-// URL에서 Place ID 추출
 function extractPlaceId(url) {
-  // map.naver.com/v5/entry/place/123456789
-  const match1 = url.match(/place\/(\d+)/)
-  if (match1) return match1[1]
-
-  // query string
+  const match = url.match(/place\/(\d+)/)
+  if (match) return match[1]
   const match2 = url.match(/[?&]id=(\d+)/)
-  if (match2) return match2[2]
-
+  if (match2) return match2[1]
   return null
 }
 
-// naver.me 단축 URL 확장
 async function expandNaverUrl(shortUrl) {
   try {
-    const response = await fetch(shortUrl, {
+    const res = await fetch(shortUrl, {
       method: 'GET',
       redirect: 'follow',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15'
       }
     })
-    return response.url
+    return res.url
   } catch {
     return shortUrl
   }
 }
 
-// 네이버 플레이스 내부 API로 리뷰 가져오기
-async function fetchNaverPlaceReviews(placeId, maxReviews = 50) {
+async function fetchReviews(placeId, maxReviews = 50) {
   const reviews = []
-  let start = 1
-  const pageSize = 10
+  let page = 1
 
-  const headers = {
+  const commonHeaders = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'ko-KR,ko;q=0.9',
+    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
     'Referer': `https://pcmap.place.naver.com/restaurant/${placeId}/review/visitor`,
-    'Origin': 'https://pcmap.place.naver.com',
+    'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"macOS"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
   }
 
-  while (reviews.length < maxReviews) {
+  while (reviews.length < maxReviews && page <= 10) {
     try {
-      // 네이버 플레이스 방문자 리뷰 API
-      const url = `https://api.place.naver.com/graphql`
-      const query = {
+      const url = `https://pcmap-api.place.naver.com/place/graphql`
+      const body = [{
         operationName: 'getVisitorReviews',
         variables: {
           input: {
@@ -60,8 +56,8 @@ async function fetchNaverPlaceReviews(placeId, maxReviews = 50) {
             businessType: 'restaurant',
             item: '0',
             bookingBusinessId: null,
-            page: Math.ceil(start / pageSize),
-            size: pageSize,
+            page,
+            size: 10,
             isPhotoUsed: false,
             includeSuper: true,
             getUserStats: true,
@@ -75,39 +71,43 @@ async function fetchNaverPlaceReviews(placeId, maxReviews = 50) {
               id
               body
               rating
-              author { nickname }
+              author {
+                nickname
+              }
+              created
             }
             totalCount
+            __typename
           }
         }`
-      }
+      }]
 
       const res = await fetch(url, {
         method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify(query),
+        headers: { ...commonHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
       })
 
-      if (!res.ok) break
+      if (!res.ok) {
+        console.log(`API 응답 실패: ${res.status}`)
+        break
+      }
 
       const data = await res.json()
-      const items = data?.data?.visitorReviews?.items || []
+      const items = data?.[0]?.data?.visitorReviews?.items || []
+
+      console.log(`페이지 ${page}: ${items.length}개 리뷰`)
 
       if (items.length === 0) break
 
       for (const item of items) {
-        if (item.body && item.body.trim().length > 5) {
-          reviews.push(item.body.trim())
-        }
+        if (item.body?.trim()) reviews.push(item.body.trim())
       }
 
-      start += pageSize
-      if (items.length < pageSize) break
-
-      // 짧은 딜레이
-      await new Promise(r => setTimeout(r, 300))
+      page++
+      await new Promise(r => setTimeout(r, 500))
     } catch (err) {
-      console.error('리뷰 페이지 오류:', err.message)
+      console.error(`페이지 ${page} 오류:`, err.message)
       break
     }
   }
@@ -115,86 +115,75 @@ async function fetchNaverPlaceReviews(placeId, maxReviews = 50) {
   return reviews.slice(0, maxReviews)
 }
 
-// 네이버 플레이스 기본 정보 가져오기
-async function fetchNaverPlaceInfo(placeId) {
+async function fetchPlaceInfo(placeId) {
   try {
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Accept': 'application/json',
-      'Referer': `https://pcmap.place.naver.com/restaurant/${placeId}/home`,
-    }
-
-    const url = `https://api.place.naver.com/graphql`
-    const query = {
-      operationName: 'getBookingBusiness',
-      variables: { input: { businessId: placeId } },
-      query: `query getBookingBusiness($input: BusinessInput) {
-        business(input: $input) {
+    const url = `https://pcmap-api.place.naver.com/place/graphql`
+    const body = [{
+      operationName: 'getRestaurant',
+      variables: {
+        input: { businessId: placeId }
+      },
+      query: `query getRestaurant($input: RestaurantInput) {
+        restaurant(input: $input) {
           name
           category
           address
           phone
-          businessHours { description }
-          rating { ratingAvg }
+          businessHours { businessStatus { status } description }
+          visitorReviewsScore
         }
       }`
-    }
+    }]
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify(query),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Referer': `https://pcmap.place.naver.com/restaurant/${placeId}/home`,
+      },
+      body: JSON.stringify(body),
     })
 
     if (!res.ok) return null
-
     const data = await res.json()
-    return data?.data?.business || null
+    return data?.[0]?.data?.restaurant || null
   } catch {
     return null
   }
 }
 
-// 헬스체크
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: '네이버 리뷰 크롤러 서버 v2' })
+  res.json({ status: 'ok', message: '네이버 리뷰 크롤러 서버 v3' })
 })
 
-// 크롤링 API
 app.post('/crawl', async (req, res) => {
   try {
     let { url, maxReviews = 50 } = req.body
 
-    if (!url) {
-      return res.status(400).json({ error: 'URL을 입력해주세요' })
-    }
+    if (!url) return res.status(400).json({ error: 'URL을 입력해주세요' })
 
     const isNaverUrl = url.includes('map.naver.com') || url.includes('naver.me') || url.includes('place.naver.com')
-    if (!isNaverUrl) {
-      return res.status(400).json({ error: '네이버 지도 URL만 지원합니다' })
-    }
+    if (!isNaverUrl) return res.status(400).json({ error: '네이버 지도 URL만 지원합니다' })
 
-    // 단축 URL 확장
     if (url.includes('naver.me/')) {
       url = await expandNaverUrl(url)
       console.log(`단축 URL 확장: ${url}`)
     }
 
     const placeId = extractPlaceId(url)
-    if (!placeId) {
-      return res.status(400).json({ error: 'URL에서 가게 ID를 찾을 수 없습니다' })
-    }
+    if (!placeId) return res.status(400).json({ error: 'URL에서 가게 ID를 찾을 수 없습니다' })
 
-    console.log(`리뷰 수집 시작: placeId=${placeId}`)
-    const startTime = Date.now()
+    console.log(`시작: placeId=${placeId}`)
+    const start = Date.now()
 
-    // 병렬로 기본 정보 + 리뷰 가져오기
     const [info, reviews] = await Promise.all([
-      fetchNaverPlaceInfo(placeId),
-      fetchNaverPlaceReviews(placeId, Math.min(maxReviews, 100)),
+      fetchPlaceInfo(placeId),
+      fetchReviews(placeId, Math.min(maxReviews, 100)),
     ])
 
-    console.log(`완료: ${reviews.length}개 리뷰, ${Date.now() - startTime}ms`)
+    console.log(`완료: ${reviews.length}개 리뷰, ${Date.now() - start}ms`)
 
     res.json({
       success: true,
@@ -205,7 +194,7 @@ app.post('/crawl', async (req, res) => {
         address: info?.address || '',
         phone: info?.phone || '',
         hours: info?.businessHours?.description || '',
-        rating: String(info?.rating?.ratingAvg || ''),
+        rating: String(info?.visitorReviewsScore || ''),
         reviewCount: reviews.length,
         reviews,
         reviewsText: reviews.join('\n'),
@@ -218,5 +207,5 @@ app.post('/crawl', async (req, res) => {
 })
 
 app.listen(PORT, () => {
-  console.log(`크롤러 서버 v2 실행 중: http://localhost:${PORT}`)
+  console.log(`크롤러 서버 v3 실행 중: http://localhost:${PORT}`)
 })
