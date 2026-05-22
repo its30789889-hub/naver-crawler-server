@@ -149,6 +149,71 @@ app.post('/crawl', async (req, res) => {
   }
 })
 
+// 네이버 블로그 크롤러
+async function fetchBlogContent(blogUrl) {
+  try {
+    // 모바일 버전으로 변환 (파싱 쉬움)
+    const mobileUrl = blogUrl
+      .replace('blog.naver.com', 'm.blog.naver.com')
+
+    const res = await fetch(mobileUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+        'Accept-Language': 'ko-KR,ko;q=0.9',
+      }
+    })
+
+    const html = await res.text()
+
+    // 텍스트 추출
+    const textContent = html
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 3000)
+
+    // 이미지 URL 추출
+    const imgMatches = html.match(/https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*/gi) || []
+    const images = [...new Set(imgMatches)]
+      .filter(url => url.includes('blogfiles') || url.includes('postfiles'))
+      .slice(0, 5)
+
+    return { textContent, images }
+  } catch (err) {
+    console.error('[블로그] 크롤링 오류:', err.message)
+    throw err
+  }
+}
+
+app.post('/crawl-blog', async (req, res) => {
+  try {
+    const { url } = req.body
+
+    if (!url) return res.status(400).json({ error: 'URL을 입력해주세요' })
+
+    const isBlogUrl = url.includes('blog.naver.com')
+    if (!isBlogUrl) return res.status(400).json({ error: '네이버 블로그 URL만 지원합니다' })
+
+    console.log(`[블로그] 크롤링 시작: ${url}`)
+
+    const { textContent, images } = await fetchBlogContent(url)
+
+    console.log(`[블로그] 텍스트 ${textContent.length}자, 이미지 ${images.length}개 추출`)
+
+    res.json({
+      success: true,
+      data: {
+        textContent,
+        images,
+      }
+    })
+  } catch (err) {
+    console.error('[블로그] 오류:', err)
+    res.status(500).json({ error: '처리 중 오류: ' + err.message })
+  }
+})
 app.listen(PORT, () => {
   console.log(`크롤러 서버 v4 실행 중: http://localhost:${PORT}`)
 })
