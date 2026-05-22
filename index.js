@@ -175,10 +175,16 @@ async function fetchBlogContent(blogUrl) {
       .slice(0, 3000)
 
     // 이미지 URL 추출
-    const imgMatches = html.match(/https?:\/\/[^"']+\.(?:jpg|jpeg|png|webp)[^"']*/gi) || []
-    const images = [...new Set(imgMatches)]
-      .filter(url => url.includes('blogfiles') || url.includes('postfiles'))
-      .slice(0, 5)
+    const imgMatches = html.match(/https?:\/\/[^"'\\s]+\.(?:jpg|jpeg|png|webp)[^"'\\s]*/gi) || []
+const images = [...new Set(imgMatches)]
+  .filter(url =>
+    url.includes('pstatic.net') ||
+    url.includes('blogfiles') ||
+    url.includes('postfiles') ||
+    url.includes('naver.net')
+  )
+  .filter(url => !url.includes('static.naver') && !url.includes('s.pstatic'))
+  .slice(0, 5)
 
     return { textContent, images }
   } catch (err) {
